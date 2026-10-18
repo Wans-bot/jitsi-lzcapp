@@ -1,0 +1,17 @@
+pkgout: dist
+icon: icon.png
+contentdir: ./content
+
+# jibri 需要上游 compose 里的这几项能力，而 lpk 规范目前不覆盖，只能走 compose_override
+# （官方文档 advanced-compose-override.md 的过渡机制）。与上游 jibri.yml 一致：
+# 只读 rootfs + /run /tmp tmpfs + 2G /dev/shm + Chrome 需要的 SYS_ADMIN。
+compose_override:
+  services:
+    jibri:
+      # 不要挂 tmpfs！平台会把 tmpfs 当卷挂上，盖住镜像自带的 /var/run/s6/cont-init.d，
+      # s6 直接 Permission denied 起不来。只读 rootfs 同理不要开（镜像要 chmod /home/jibri）。
+      # Chrome 需要更大的 /dev/shm，用 compose 的 shm_size 给足即可。
+      read_only: false
+      shm_size: 2gb
+      cap_add:
+        - SYS_ADMIN

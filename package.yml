@@ -1,0 +1,55 @@
+package: cloud.lazycat.app.jitsi
+version: 2.0.11249-2
+name: Jitsi Meet
+description: >-
+  Self-hosted video conferencing. Open a room in the browser and share the link;
+  multi-party HD video, screen sharing, chat and virtual backgrounds all run on your
+  own microserver, with no account and no cloud service involved.
+author: Jitsi (8x8, Inc.)
+license: Apache-2.0
+homepage: https://github.com/jitsi/jitsi-meet
+locales:
+  zh-CN:
+    name: Jitsi Meet 视频会议
+    description: >-
+      自建的视频会议系统：打开应用即可创建会议室，把链接发给家人朋友就能开会。
+      支持多人高清视频、屏幕共享、文字聊天、虚拟背景与举手，全部在你的微服上运行，
+      不需要注册账号，也不经过任何第三方服务器。
+    usage: |
+      首次使用：
+      1. 打开应用后会看到 Jitsi 欢迎页，直接在输入框里填一个会议名（例如 "family"），点“开始会议”。
+      2. 进入会议室后浏览器会询问麦克风/摄像头权限，点“允许”。
+      3. 点右上角的“复制邀请链接”，把链接发给要参会的人；对方打开链接即进入同一个会议室。
+
+      常用操作：
+      - 屏幕共享：底部工具栏的“共享屏幕”，可选择共享整个屏幕或某个标签页。
+      - 文字聊天：底部工具栏的“聊天”，可发消息和文件链接。
+      - 虚拟背景：右下角“更多操作” → “虚拟背景”，可虚化或替换背景。
+      - 举手/表情：底部工具栏的“举手”和表情按钮。
+      - 会议中改名：点自己的名字即可修改显示名称。
+
+      说明：
+      - 本应用不需要账号密码，进入应用即可开会；链接发出去谁都能加入，请勿在公开场合泄露房间名。
+      - 会议数据不落盘，会议结束后房间自动消失；服务端数据保存在 /lzcapp/var，重启或升级不会丢失。
+      - 建议同一时间不超过 20 人同时开视频；人数多时可只开语音或关闭摄像头。
+      - 手机、平板浏览器同样可用，界面会自动适配。
+  en-US:
+    name: Jitsi Meet
+    description: >-
+      Self-hosted video conferencing. Open the app, start a room and share the link:
+      multi-party HD video, screen sharing, chat and virtual backgrounds, all running
+      on your own microserver with no account and no third-party cloud service.
+    usage: |
+      Getting started:
+      1. Open the app, type a room name (for example "family") and press "Start meeting".
+      2. Allow microphone and camera access when the browser asks.
+      3. Use "Copy invite link" in the top bar to share the room with other participants.
+
+      Notes:
+      - No account or password is required; anyone with the link can join the room.
+      - Meetings are ephemeral; server data lives in /lzcapp/var and survives restarts and upgrades.
+permissions:
+  required:
+    - net.internet
+  optional:
+    - net.lan

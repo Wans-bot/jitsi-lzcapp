@@ -1,0 +1,386 @@
+usage: |
+  Jitsi Meet 是自建的视频会议系统：打开应用即可创建会议室，把链接发给家人朋友就能开会。
+  支持多人高清视频、屏幕共享、文字聊天、虚拟背景与举手，全部在你的微服上运行。
+
+  首次使用：
+  1. 打开应用后会看到 Jitsi 欢迎页，直接在输入框里填一个会议名（例如 family），点“开始会议”。
+  2. 浏览器会询问麦克风/摄像头权限，点“允许”。
+  3. 点顶部“复制邀请链接”，把链接发给参会的人；对方打开链接即进入同一个会议室。
+
+  常用操作：
+  - 屏幕共享：底部工具栏的“共享屏幕”。
+  - 文字聊天 / 发文件：底部工具栏的“聊天”，可发消息，也可点回形针发送文件。
+  - 虚拟背景：右下角“更多操作” → “虚拟背景”。
+  - 举手、表情：底部工具栏。
+
+  说明：
+  - 本应用不需要账号密码（打开即用），也没有登录页；链接发给谁，谁就能加入，请注意房间名的私密性。
+  - 会议本身不落盘；服务端配置与密钥保存在 /lzcapp/var，重启与升级不会丢失。
+  - 建议同时在会人数不超过 20 人；人数多时建议只开语音或关闭摄像头。
+
+# subdomain 一经发布不可更改：它决定应用的实例标识与数据存储路径。
+application:
+  subdomain: jitsi
+  routes:
+    - /=http://web.cloud.lazycat.app.jitsi.lzcapp:8000
+  # 会议房间链接必须能被没有微服账号的家人朋友打开（简介就是这么承诺的），
+  # 而且 Jibri 录制时它容器里的 Chrome 也要能匿名打开会议页面——否则会
+  # "Timed out waiting for call page to load" → FailedToJoinCall（实测）。
+  # 应用自身没有账号体系（AUTH_ENABLED=0），访问控制本就不是本应用提供的。
+  public_path:
+    - /
+  health_check:
+    test_url: http://web.cloud.lazycat.app.jitsi.lzcapp:8000/
+    start_period: 600s
+    timeout: 10s
+  # 媒体通道：浏览器的音视频统一经 TURN 中继进出。
+  # 客户端只用 3478 与 TURN 服务建立控制连接，中继地址由同网络内的
+  # 视频桥（jvb）使用，因此无需把中继端口段暴露到应用域名上。
+  ingress:
+    - protocol: udp
+      description: TURN for conference media
+      service: coturn
+      port: 3478
+    - protocol: tcp
+      description: TURN for conference media (falls back when UDP is blocked)
+      service: coturn
+      port: 3478
+  injects:
+    # 上架指南不希望应用内出现"去外部商店下载 App"的推广；这里把欢迎页那条
+    # 「手机版Jitsi – 下载我们的APP」横幅隐藏掉（纯 UI，不改上游源码）。
+    - id: jitsi-hide-app-promo
+      'on': browser
+      auth_required: false
+      when:
+        - /*
+      do:
+        - src: |
+            (function () {
+              var RE = /下载我们的APP|Download our app|手机版Jitsi|Jitsi for mobile/i;
+              var PROTECTED_IDS = ["react", "welcome-page", "root", "app", "main"];
+
+              function area(el) {
+                var r = el.getBoundingClientRect();
+                return Math.max(0, r.width) * Math.max(0, r.height);
+              }
+
+              // 只允许隐藏「小面积」的元素。
+              // 旧写法直接 `el.closest("a") || el.parentElement`：在欢迎页上匹配到的推广文案
+              // 的父节点就是 <body>，于是整页被设成 display:none —— 审核 #20209 看到的
+              // 「应用界面白屏，没有任何内容」就是这么来的（实测：只拦截本注入即恢复正常）。
+              function canHide(el) {
+                if (!el || el === document.body || el === document.documentElement) return false;
+                if (PROTECTED_IDS.indexOf(el.id) >= 0) return false;
+                if (el.querySelector("#react")) return false;
+                var limit = window.innerWidth * window.innerHeight * 0.25;
+                var a = area(el);
+                return a > 0 && a <= limit;
+              }
+
+              function hidePromo() {
+                var nodes = document.querySelectorAll("a,div,p,span,button");
+                for (var i = 0; i < nodes.length; i++) {
+                  var el = nodes[i];
+                  if (!el || !el.parentNode) continue;
+                  var t = el.textContent || "";
+                  if (t.length > 120) continue;
+                  if (!RE.test(t)) continue;
+                  var box = el.closest("a") || el.parentElement || el;
+                  if (!canHide(box)) box = el;
+                  if (canHide(box)) box.style.display = "none";
+                }
+              }
+
+              hidePromo();
+              document.addEventListener("DOMContentLoaded", hidePromo);
+              window.setTimeout(hidePromo, 1500);
+              window.setTimeout(hidePromo, 4000);
+            })();
+    - id: lazycat-file-bridge
+      'on': request
+      when:
+        - /__lazycat_file_bridge/*
+      do:
+        - src: |
+            const bridgePrefix = "/__lazycat_file_bridge";
+            const requestHost = String(ctx.request.host || "")
+              .split(":")[0]
+              .toLowerCase();
+            const firstDot = requestHost.indexOf(".");
+            const method = String(ctx.request.method || "").toUpperCase();
+
+            if (
+              firstDot <= 0 ||
+              !requestHost.endsWith(".heiyu.space") ||
+              !["GET", "HEAD", "PUT"].includes(method)
+            ) {
+              ctx.response.send(
+                ["GET", "HEAD", "PUT"].includes(method) ? 400 : 405,
+                "Invalid LazyCat file bridge request",
+              );
+              return;
+            }
+
+            const boxDomain = requestHost.slice(firstDot + 1);
+            const fileOrigin = "https://file." + boxDomain;
+            const targetPath =
+              "/files/home" + ctx.request.path.slice(bridgePrefix.length);
+
+            ctx.headers.del("Origin");
+            ctx.headers.del("Referer");
+            ctx.proxy.to(fileOrigin, {
+              path: targetPath,
+              query: ctx.request.raw_query,
+              use_target_host: true,
+              timeout_ms: 120000,
+              on_fail: "error",
+            });
+    - id: open-save-chooser
+      'on': browser
+      when:
+        - /*
+      do:
+        - src: >-
+            file:///lzcapp/pkg/content/lazycat-injects/lzc-file-chooser-inject.js
+          params:
+            diskRoot: /_lzc/files/home
+            fileBridgeRoot: /__lazycat_file_bridge
+            fallbackMime: application/octet-stream
+            locale: auto
+            hooks:
+              fileSystemAccess: true
+              fileInput: true
+              downloadAnchor: true
+
+services:
+  # 录制/直播执行者：容器里跑 Chrome + ffmpeg，以 recorder 身份加入会议，
+  # 录制结果落在 /config/recordings（持久化并与 web 共享）。
+  jibri:
+    image: registry.lazycat.cloud/wans/jibri-lzc-2c1f:8e178df6001eef07
+    binds:
+      - /lzcapp/var/jibri/config:/config
+    environment:
+      - TZ=Asia/Shanghai
+      - DISPLAY=:0
+      # 容器里没有 SYS_ADMIN，Chrome 必须关沙箱
+      - CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_MUC_DOMAIN=muc.meet.jitsi
+      - XMPP_RECORDER_DOMAIN=hidden.meet.jitsi
+      - XMPP_SERVER=prosody
+      - XMPP_TRUST_ALL_CERTS=1
+      - JIBRI_XMPP_USER=jibri
+      - JIBRI_XMPP_PASSWORD={{ stable_secret "jibri_xmpp_password" }}
+      - JIBRI_RECORDER_USER=recorder
+      - JIBRI_RECORDER_PASSWORD={{ stable_secret "jibri_recorder_password" }}
+      - JIBRI_BREWERY_MUC=jibribrewery
+      - JIBRI_RECORDING_DIR=/config/recordings
+      - JIBRI_FINALIZE_RECORDING_SCRIPT_PATH=/config/finalize.sh
+      - JIBRI_STRIP_DOMAIN_JID=muc
+      - JIBRI_LOGS_DIR=/config/logs
+      - PUBLIC_URL=https://${LAZYCAT_APP_DOMAIN}
+      - ENABLE_RECORDING=1
+    depends_on:
+      - jicofo
+    healthcheck:
+      test: [CMD-SHELL, "pgrep -f jibri >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+  web:
+    image: registry.lazycat.cloud/wans/jitsi/web:a8863ba349a3c21d
+    binds:
+      - /lzcapp/var/web/config:/config
+      - /lzcapp/var/web/storage:/storage
+      # Jibri 录制出来的文件放在这里，供会议内「文件录制分享」直接下载
+      - /lzcapp/var/jibri/config/recordings:/config/recordings
+    environment:
+      - TZ=Asia/Shanghai
+      - PUBLIC_URL=https://${LAZYCAT_APP_DOMAIN}
+      # 平台不提供泛域名，会议室使用 /房间名 这种单域名形式
+      - ENABLE_SUBDOMAINS=0
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_MUC_DOMAIN=muc.meet.jitsi
+      - XMPP_BOSH_URL_BASE=http://prosody:5280
+      - ENABLE_XMPP_WEBSOCKET=1
+      - BOSH_RELATIVE=1
+      - ENABLE_LETSENCRYPT=0
+      - DISABLE_HTTPS=1
+      - ENABLE_HTTP_REDIRECT=0
+      - ENABLE_AUTH=0
+      - ENABLE_GUESTS=0
+      # 一律经视频桥转发，避免依赖客户端之间的直连地址
+      - ENABLE_P2P=0
+      - ENABLE_WELCOME_PAGE=1
+      - ENABLE_PREJOIN_PAGE=1
+      - ENABLE_THIRD_PARTY_REQUESTS=0
+      - ENABLE_CALENDAR=0
+      - ENABLE_RECORDING=1
+      - ENABLE_LIVESTREAMING=1
+      - ENABLE_TRANSCRIPTIONS=0
+      # 本地录制走浏览器 getDisplayMedia 抓「当前选项卡」，微服客户端里取不到，
+      # 点 Record 必然报「录制启动失败/请选择当前选项卡」，因此彻底关掉录制入口。
+      # 注意：ENABLE_RECORDING=0 只关服务端录制，本地录制由 DISABLE_LOCAL_RECORDING 独立控制。
+      - DISABLE_LOCAL_RECORDING=true
+      - ENABLE_FILE_RECORDING_SHARING=1
+      # 手机浏览器直接进会议室，不引导去应用商店安装 App
+      - DISABLE_DEEP_LINKING=1
+      - DEFAULT_LANGUAGE=zh-CN
+      - PREFERRED_LANGUAGE=zh-CN
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS -o /dev/null http://127.0.0.1:8000/"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+  prosody:
+    image: registry.lazycat.cloud/wans/jitsi/prosody:86cdfd845b16c6c6
+    # 上游镜像是为只读 rootfs 准备的（s6-overlay 要有 /run、/tmp 两个 tmpfs），
+    # lzcapp 生成的 compose 不带这两个挂载，这里按上游 compose 补回来。
+    tmpfs:
+      - /run:size=16M,mode=1750,exec
+      - /tmp:size=16M,mode=1777,noexec
+    # 镜像内服务以 uid 1000 运行并要求数据目录可写；lzcapp 的持久目录归平台所有，
+    # 因此不 bind 数据目录，账号由 register-setup 每次启动用稳定密钥重新创建。
+    binds:
+      - /lzcapp/var/prosody/config:/config
+    environment:
+      - TZ=Asia/Shanghai
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_MUC_DOMAIN=muc.meet.jitsi
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_HIDDEN_DOMAIN=hidden.meet.jitsi
+      - XMPP_RECORDER_DOMAIN=recorder.meet.jitsi
+      - JIBRI_RECORDER_USER=recorder
+      - JIBRI_XMPP_USER=jibri
+      - JIBRI_BREWERY_MUC=jibribrewery
+      - JIBRI_PENDING_TIMEOUT=90
+      - JIBRI_RECORDER_PASSWORD={{ stable_secret "jibri_recorder_password" }}
+      - JIBRI_XMPP_PASSWORD={{ stable_secret "jibri_xmpp_password" }}
+      - XMPP_GUEST_DOMAIN=guest.meet.jitsi
+      - ENABLE_AUTH=0
+      - ENABLE_GUESTS=0
+      - ENABLE_XMPP_WEBSOCKET=1
+      - ENABLE_S2S=0
+      - ENABLE_RECORDING=1
+      - ENABLE_TRANSCRIPTIONS=0
+      - MAX_PARTICIPANTS=40
+      - JICOFO_AUTH_USER=focus
+      - JICOFO_AUTH_PASSWORD={{ stable_secret "jitsi_jicofo_password" }}
+      - JVB_AUTH_USER=jvb
+      - JVB_AUTH_PASSWORD={{ stable_secret "jitsi_jvb_password" }}
+      # TURN：prosody 用共享密钥为每位参会者签发临时凭据
+      - TURN_HOST=${LAZYCAT_APP_DOMAIN}
+      - TURN_PORT=3478
+      - TURN_TRANSPORT=udp,tcp
+      - TURN_TTL=86400
+      - TURN_CREDENTIALS={{ stable_secret "jitsi_turn_secret" }}
+    healthcheck:
+      test: [CMD-SHELL, "bash -c '</dev/tcp/127.0.0.1/5280'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 180s
+
+  jicofo:
+    image: registry.lazycat.cloud/wans/jitsi/jicofo:8b416bfa18029950
+    binds:
+      - /lzcapp/var/jicofo/config:/config
+    environment:
+      - TZ=Asia/Shanghai
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_MUC_DOMAIN=muc.meet.jitsi
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_HIDDEN_DOMAIN=hidden.meet.jitsi
+      - XMPP_RECORDER_DOMAIN=recorder.meet.jitsi
+      - XMPP_SERVER=prosody
+      - ENABLE_AUTH=0
+      - ENABLE_RECORDING=1
+      - ENABLE_TRANSCRIPTIONS=0
+      - JICOFO_ENABLE_REST=1
+      - JICOFO_AUTH_USER=focus
+      - JICOFO_AUTH_PASSWORD={{ stable_secret "jitsi_jicofo_password" }}
+      - JVB_AUTH_USER=jvb
+      - JVB_AUTH_PASSWORD={{ stable_secret "jitsi_jvb_password" }}
+    depends_on:
+      - prosody
+    healthcheck:
+      test: [CMD-SHELL, "bash -c '</dev/tcp/127.0.0.1/8888'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 180s
+
+  jvb:
+    image: registry.lazycat.cloud/wans/jitsi/jvb:edbeada2adf44e7b
+    binds:
+      - /lzcapp/var/jvb/config:/config
+    environment:
+      - TZ=Asia/Shanghai
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_MUC_DOMAIN=muc.meet.jitsi
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_SERVER=prosody
+      - JVB_AUTH_USER=jvb
+      - JVB_AUTH_PASSWORD={{ stable_secret "jitsi_jvb_password" }}
+      - JVB_PORT=10000
+      - JVB_ADVERTISE_PRIVATE_CANDIDATES=1
+      # 关闭 STUN 探测：容器内探测到的地址不可用，媒体统一走 TURN 中继
+      - JVB_DISABLE_STUN=1
+      - COLIBRI_REST_ENABLED=1
+    depends_on:
+      - prosody
+    healthcheck:
+      test: [CMD-SHELL, "bash -c '</dev/tcp/127.0.0.1/8080'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 240s
+
+  coturn:
+    image: registry.lazycat.cloud/wans/catdog/coturn/coturn:25f096ff244b4112
+    environment:
+      - TURN_SHARED_SECRET={{ stable_secret "jitsi_turn_secret" }}
+      - TURN_REALM=jitsi
+    setup_script: |
+      set -eu
+      # 中继地址使用容器自己的私网地址：这个地址对同网络内的视频桥可达，
+      # 而客户端只通过 3478 与 TURN 建立控制连接，不直接访问中继端口。
+      relay_ip="$(awk '/\|-- / { ip=$2 } /\/32 host LOCAL/ && ip ~ /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/ { print ip; exit }' /proc/net/fib_trie)"
+      test -n "$relay_ip"
+      cat > /usr/local/bin/detect-external-ip.sh <<EOF
+      #!/bin/sh
+      printf '%s\n' '${relay_ip}'
+      EOF
+      chmod +x /usr/local/bin/detect-external-ip.sh
+      mkdir -p /etc/turnserver
+      cat > /etc/turnserver/turnserver.conf <<EOF
+      listening-port=3478
+      listening-ip=0.0.0.0
+      relay-ip=${relay_ip}
+      realm=jitsi
+      fingerprint
+      lt-cred-mech
+      use-auth-secret
+      static-auth-secret={{ stable_secret "jitsi_turn_secret" }}
+      min-port=50000
+      max-port=50100
+      no-cli
+      no-multicast-peers
+      no-tlsv1
+      no-tlsv1_1
+      stale-nonce=600
+      EOF
+    healthcheck:
+      test: [CMD-SHELL, "turnutils_stunclient -p 3478 127.0.0.1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
